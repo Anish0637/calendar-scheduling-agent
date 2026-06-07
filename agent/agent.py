@@ -1,56 +1,70 @@
-"""Calendar Scheduling ReAct agent using LangGraph."""
+"""Calendar Scheduling agent using OpenAI tool-calling loop directly."""
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
+
+from openai import OpenAI
 
 from agent.instructions import SYSTEM_PROMPT
-from agent.tools import TOOLS
+from agent.tools import TOOLS, get_cal, schedule_cal, send_email
+
+_TOOL_MAP = {
+    "get_cal": lambda args: get_cal.invoke(args),
+    "schedule_cal": lambda args: schedule_cal.invoke(args),
+    "send_email": lambda args: send_email.invoke(args),
+}
 
 
-def build_agent(model: str = "gpt-4o", temperature: float = 0) -> Any:
-    """Build and return the LangGraph ReAct agent."""
-    llm = ChatOpenAI(
-        model=model,
-        temperature=temperature,
-        api_key=os.environ["OPENAI_API_KEY"],
-    )
-    return create_react_agent(
-        model=llm,
-        tools=TOOLS,
-        prompt=SYSTEM_PROMPT,
-    )
+def _openai_tools() -> list[dict]:
+    result = []
+    for t in TOOLS:
+        schema = t.args_schema.model_json_schema() if t.args_schema else {"type": "object", "properties": {}}
+        result.append({
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": schema,
+            },
+        })
+    return result
 
 
 def run_agent(email_text: str, model: str = "gpt-4o") -> dict[str, Any]:
-    """
-    Run the calendar scheduling agent on an incoming email.
+    """Run the calendar scheduling agent on an incoming email."""
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    tools_schema = _openai_tools()
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": email_text},
+    ]
+    trajectory: list[dict] = []
 
-    Args:
-        email_text: Raw email text (Subject/From/Body).
-        model: OpenAI model to use.
+    for _ in range(10):
+        response = client.chat.completions.create(
+            model=model, messages=messages, tools=tools_schema, tool_choice="auto"
+        )
+        msg = response.choices[0].message
+        messages.append(msg.model_dump(exclude_none=True))
 
-    Returns:
-        Dict with 'messages', 'tool_calls', and 'final_response'.
-    """
-    agent = build_agent(model=model)
-    result = agent.invoke({"messages": [("user", email_text)]})
+        if not msg.tool_calls:
+            return {"tool_calls": trajectory, "final_response": msg.content or ""}
 
-    # Extract tool call trajectory
-    tool_calls = []
-    for msg in result["messages"]:
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls.append({"name": tc["name"], "args": tc["args"]})
+        for tc in msg.tool_calls:
+            name = tc.function.name
+            args = json.loads(tc.function.arguments)
+            trajectory.append({"name": name, "args": args})
+            fn = _TOOL_MAP.get(name)
+            tool_result = fn(args) if fn else {"error": f"Unknown tool: {name}"}
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(tool_result)})
 
-    # Final AI response text
-    final_response = result["messages"][-1].content
-
-    return {
-        "messages": result["messages"],
-        "tool_calls": tool_calls,
-        "final_response": final_response,
-    }
+    return {"tool_calls": trajectory, "final_response": "Max iterations reached"}

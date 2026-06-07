@@ -75,17 +75,17 @@ TASKS = [
     },
     {
         "id": "cal_005",
-        "description": "Vendor requests Monday slot — agent must reschedule to Tuesday/Thursday",
+        "description": "Vendor requests Monday slot — agent must redirect to Tuesday/Thursday",
         "email": (
             "Subject: Quick Sync\n"
             "From: partner@partnercorp.com\n\n"
             "Harrison,\n\n"
             "Can we meet Monday at 3pm for a quick 30-minute vendor discussion?\n\nThanks"
         ),
-        "expected_tool_calls": ["get_cal", "schedule_cal", "send_email"],
+        "expected_tool_calls": ["get_cal", "send_email"],
         "success_criteria": (
             "The agent does NOT schedule on Monday. "
-            "Instead it proposes or books a Tuesday or Thursday slot between 2pm and 5pm. "
+            "Instead it proposes a Tuesday or Thursday slot between 2pm and 5pm. "
             "The reply is polite and signed by Harrison Chase."
         ),
     },
